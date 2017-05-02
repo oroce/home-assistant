@@ -33,7 +33,7 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
 
 def get_scanner(hass, config):
     """Validate the configuration and return a TP-Link scanner."""
-    for cls in [Tplink4DeviceScanner, Tplink3DeviceScanner,
+    for cls in [Tplink5DeviceScanner, Tplink4DeviceScanner, Tplink3DeviceScanner,
                 Tplink2DeviceScanner, TplinkDeviceScanner]:
         scanner = cls(config[DOMAIN])
         if scanner.success_init:
@@ -328,6 +328,94 @@ class Tplink4DeviceScanner(TplinkDeviceScanner):
                 })
                 mac_results.extend(self.parse_macs.findall(page.text))
 
+            if not mac_results:
+                return False
+
+            self.last_results = [mac.replace("-", ":") for mac in mac_results]
+            return True
+
+class Tplink5DeviceScanner(TplinkDeviceScanner):
+    """This class queries an WR1043ND router with TP-Link firmware TODO."""
+
+    def __init__(self, config):
+        """Initialize the scanner."""
+        self.credentials = ''
+        self.token = ''
+        self.session = ''
+        super(Tplink5DeviceScanner, self).__init__(config)
+
+    def scan_devices(self):
+        """Scan for new devices and return a list with found device IDs."""
+        self._update_info()
+        return self.last_results
+
+    # pylint: disable=no-self-use
+    def get_device_name(self, device):
+        """The firmware doesn't save the name of the wireless device."""
+        return None
+
+    def _get_auth_tokens(self):
+        """Retrieve auth tokens from the router."""
+        _LOGGER.info("Retrieving auth tokens...")
+        url = 'http://{}/'.format(self.host)
+
+        # Generate md5 hash of password. The C7 appears to use the first 15
+        # characters of the password only, so we truncate to remove additional
+        # characters from being hashed.
+        credentials = '{}:{}'.format(self.username, self.password).encode('utf')
+
+        # Encode the credentials to be sent as a cookie.
+        self.credentials = base64.b64encode(credentials).decode('utf')
+
+        # Create the authorization cookie.
+        cookie = 'Authorization=Basic {}'.format(self.credentials)
+        headers = {
+          'cookie': cookie
+        }
+
+        response = requests.get(url, headers=headers)
+
+        try:
+            result = re.search(
+                'var fileParaFS = new Array\(\\n"(.*)", "(.*)", \\n.*',
+                response.text.encode('utf').decode('utf8')
+            )
+            if not result:
+                return False
+            self.token = result.group(1)
+            self.session = result.group(2)
+            return True
+        except ValueError as e:
+            _LOGGER.error("Couldn't fetch auth tokens!")
+            return False
+
+    @Throttle(MIN_TIME_BETWEEN_SCANS)
+    def _update_info(self):
+        """Ensure the information from the TP-Link router is up to date.
+        Return boolean if scanning successful.
+        """
+        with self.lock:
+            if (self.credentials == '') or (self.token == ''):
+                self._get_auth_tokens()
+
+            _LOGGER.info("Loading wireless clients...")
+
+            mac_results = []
+
+            url = 'http://{}/userRpm/WlanStationRpm.htm' \
+                .format(self.host )
+            referer = 'http://{}'.format(self.host)
+            cookie = 'Authorization=Basic {}'.format(self.credentials)
+            payload = {
+                'Page': 1,
+                'cmp': self.token,
+                'session': self.session
+            }
+            page = requests.get(url, headers={
+                'cookie': cookie,
+                'referer': referer
+            })
+            mac_results.extend(self.parse_macs.findall(page.text))
             if not mac_results:
                 return False
 
